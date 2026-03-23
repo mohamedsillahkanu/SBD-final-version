@@ -1,128 +1,79 @@
-// Service Worker for ITN Survey PWA
-// =============================================
-// IMPORTANT: When updating the app, increment the version number below!
-// This ensures users get the latest version when they click UPDATE.
-// =============================================
-const CACHE_VERSION = 1;
-const CACHE_NAME = 'itn-survey-v' + CACHE_VERSION;
-const ASSETS_TO_CACHE = [
+const CACHE_NAME = 'sbd-survey-v2';
+
+const PRECACHE_URLS = [
   './',
   './index.html',
   './styles.css',
   './script.js',
   './cascading_data.csv',
   './manifest.json',
-  './icon-192.svg',
-  './icon-512.svg',
-  // External CDN resources
+  './offline.html',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/icon-maskable-192.png',
+  './icons/icon-maskable-512.png',
   'https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js',
   'https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js',
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js'
 ];
 
-// Install event - cache assets
-self.addEventListener('install', (event) => {
-  console.log('[SW] Installing Service Worker...');
+self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => {
-        console.log('[SW] Caching app assets');
-        return cache.addAll(ASSETS_TO_CACHE);
+      .then(cache => {
+        const urls = PRECACHE_URLS.map(url => new URL(url, self.location.href).href);
+        return cache.addAll(urls);
       })
-      .then(() => {
-        console.log('[SW] All assets cached');
-        return self.skipWaiting();
-      })
-      .catch((error) => {
-        console.error('[SW] Cache failed:', error);
-      })
+      .then(() => self.skipWaiting())
+      .catch(err => console.error('[SW] Cache failed:', err))
   );
 });
 
-// Activate event - clean old caches
-self.addEventListener('activate', (event) => {
-  console.log('[SW] Activating Service Worker...');
+self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys()
-      .then((cacheNames) => {
-        return Promise.all(
-          cacheNames
-            .filter((name) => name !== CACHE_NAME)
-            .map((name) => {
-              console.log('[SW] Deleting old cache:', name);
-              return caches.delete(name);
-            })
-        );
-      })
-      .then(() => {
-        console.log('[SW] Service Worker activated');
-        return self.clients.claim();
-      })
+    caches.keys().then(names =>
+      Promise.all(names.filter(n => n !== CACHE_NAME).map(n => caches.delete(n)))
+    ).then(() => self.clients.claim())
   );
 });
 
-// Fetch event - serve from cache, fallback to network
-self.addEventListener('fetch', (event) => {
-  // Skip non-GET requests
-  if (event.request.method !== 'GET') {
-    return;
-  }
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET') return;
+  if (event.request.url.includes('script.google.com')) return;
 
-  // Skip Google Apps Script submissions
-  if (event.request.url.includes('script.google.com')) {
-    return;
-  }
+  const requestURL = new URL(event.request.url);
+  const allowedExternal = ['cdn.jsdelivr.net'];
+  const isAllowed = allowedExternal.some(o => requestURL.hostname.includes(o));
+  if (requestURL.origin !== self.location.origin && !isAllowed) return;
 
   event.respondWith(
-    caches.match(event.request)
-      .then((cachedResponse) => {
-        if (cachedResponse) {
-          // Return cached version
-          console.log('[SW] Serving from cache:', event.request.url);
-          return cachedResponse;
+    caches.match(event.request).then(cached => {
+      if (cached) return cached;
+      return fetch(event.request).then(response => {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
         }
-
-        // Not in cache, fetch from network
-        console.log('[SW] Fetching from network:', event.request.url);
-        return fetch(event.request)
-          .then((networkResponse) => {
-            // Cache the new resource for future
-            if (networkResponse && networkResponse.status === 200) {
-              const responseToCache = networkResponse.clone();
-              caches.open(CACHE_NAME)
-                .then((cache) => {
-                  cache.put(event.request, responseToCache);
-                });
-            }
-            return networkResponse;
-          })
-          .catch((error) => {
-            console.error('[SW] Fetch failed:', error);
-            // Return offline fallback for HTML pages
-            if (event.request.headers.get('accept').includes('text/html')) {
-              return caches.match('./index.html');
-            }
-          });
-      })
+        return response;
+      }).catch(() => {
+        if (event.request.mode === 'navigate') {
+          return caches.match(new URL('./offline.html', self.location.href).href);
+        }
+        return new Response('Offline', { status: 503 });
+      });
+    })
   );
 });
 
-// Handle messages from main thread
-self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
-    self.skipWaiting();
-  }
+self.addEventListener('message', event => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data?.type === 'CLEAR_CACHE') caches.delete(CACHE_NAME);
 });
 
-// Background sync for offline submissions
-self.addEventListener('sync', (event) => {
-  if (event.tag === 'sync-submissions') {
-    console.log('[SW] Background sync triggered');
-    event.waitUntil(syncPendingSubmissions());
-  }
+self.addEventListener('sync', event => {
+  if (event.tag === 'sync-submissions') event.waitUntil(syncPendingSubmissions());
 });
 
 async function syncPendingSubmissions() {
-  // This would sync pending submissions when back online
   console.log('[SW] Syncing pending submissions...');
 }
